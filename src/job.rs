@@ -1,6 +1,6 @@
 use crate::storage::Storable;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,6 +23,12 @@ impl Job {
             name: name.into(),
             command: command.into(),
         }
+    }
+}
+
+impl Display for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Job: {}\nCommand: {}", self.name, self.command)
     }
 }
 
@@ -64,6 +70,16 @@ impl JobStore {
     pub fn jobs(&self) -> impl Iterator<Item = &Job> {
         self.jobs.values()
     }
+
+    pub fn jobs_sorted(&self) -> Vec<&Job> {
+        let mut jobs: Vec<_> = self.jobs.values().collect();
+        jobs.sort_by_key(|job| &job.name);
+        jobs
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.jobs.is_empty()
+    }
 }
 
 impl Storable for JobStore {
@@ -81,6 +97,13 @@ mod tests {
         let job = Job::new("test", "echo hello");
         assert_eq!(job.name, "test");
         assert_eq!(job.command, "echo hello");
+    }
+
+    #[test]
+    fn test_job_display() {
+        let job = Job::new("my-job", "echo test");
+        let output = format!("{}", job);
+        assert_eq!(output, "Job: my-job\nCommand: echo test");
     }
 
     #[test]
@@ -170,5 +193,34 @@ mod tests {
 
         let err = JobError::NotFound("missing".to_string());
         assert_eq!(err.to_string(), "Job 'missing' not found");
+    }
+
+    #[test]
+    fn test_is_empty() {
+        let store = JobStore::new();
+        assert!(store.is_empty());
+
+        let store = store.with_job(Job::new("test", "echo test")).unwrap();
+        assert!(!store.is_empty());
+
+        let store = store.without_job("test").unwrap();
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_jobs_sorted() {
+        let store = JobStore::new()
+            .with_job(Job::new("zebra", "cmd zebra"))
+            .unwrap()
+            .with_job(Job::new("apple", "cmd apple"))
+            .unwrap()
+            .with_job(Job::new("middle", "cmd middle"))
+            .unwrap();
+
+        let sorted = store.jobs_sorted();
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted[0].name, "apple");
+        assert_eq!(sorted[1].name, "middle");
+        assert_eq!(sorted[2].name, "zebra");
     }
 }

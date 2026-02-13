@@ -79,6 +79,44 @@ fn handle_remove(name: String) -> Result<(), AppError> {
     Ok(())
 }
 
+fn format_jobs_compact(store: &JobStore) -> String {
+    store
+        .jobs_sorted()
+        .iter()
+        .map(|job| job.name.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_jobs_verbose(store: &JobStore) -> String {
+    let jobs = store.jobs_sorted();
+    let count = jobs.len();
+    let formatted_jobs = jobs
+        .iter()
+        .map(|job| format!("Name: {}\nCommand: {}", job.name, job.command))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    format!("Total jobs: {}\n\n{}", count, formatted_jobs)
+}
+
+fn handle_list(verbose: bool) -> Result<(), AppError> {
+    let store: JobStore = storage::load()?;
+
+    if store.is_empty() {
+        println!("No jobs found.");
+        return Ok(());
+    }
+
+    if verbose {
+        println!("{}", format_jobs_verbose(&store));
+    } else {
+        println!("{}", format_jobs_compact(&store));
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
@@ -91,11 +129,10 @@ fn main() -> Result<(), AppError> {
             // TODO: Implement job execution
         }
         Commands::List { verbose } => {
-            println!("Listing jobs...");
-            if verbose {
-                println!("(verbose mode)");
+            if let Err(e) = handle_list(verbose) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
-            // TODO: Implement job listing
         }
         Commands::Add { name, command } => {
             if let Err(e) = handle_add(name, command) {
@@ -116,4 +153,45 @@ fn main() -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_jobs_compact_single_line_per_job() {
+        let store = JobStore::new()
+            .with_job(Job::new("job1", "echo 1"))
+            .unwrap()
+            .with_job(Job::new("job2", "echo 2"))
+            .unwrap();
+
+        let output = format_jobs_compact(&store);
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "job1");
+        assert_eq!(lines[1], "job2");
+    }
+
+    #[test]
+    fn test_format_jobs_verbose_includes_count() {
+        let store = JobStore::new()
+            .with_job(Job::new("test", "echo test"))
+            .unwrap();
+
+        let output = format_jobs_verbose(&store);
+        assert!(output.contains("Total jobs: 1"));
+    }
+
+    #[test]
+    fn test_format_jobs_verbose_includes_details() {
+        let store = JobStore::new()
+            .with_job(Job::new("test", "echo test"))
+            .unwrap();
+
+        let output = format_jobs_verbose(&store);
+        assert!(output.contains("Name: test"));
+        assert!(output.contains("Command: echo test"));
+    }
 }

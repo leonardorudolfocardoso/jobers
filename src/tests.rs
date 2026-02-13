@@ -79,3 +79,38 @@ fn test_functional_job_store_operations() {
     let store3 = store2.without_job("test").unwrap();
     assert_eq!(store3.jobs().count(), 0);
 }
+
+#[test]
+fn test_list_formatting_integration() {
+    with_temp_storage(|temp| {
+        // Create a job store with multiple jobs (unsorted)
+        let store = JobStore::new()
+            .with_job(Job::new("zebra", "cmd zebra"))
+            .unwrap()
+            .with_job(Job::new("apple", "cmd apple"))
+            .unwrap()
+            .with_job(Job::new("middle", "cmd middle"))
+            .unwrap();
+
+        // Save to temp storage
+        let path = temp.path().join(JobStore::storage_filename());
+        let json = serde_json::to_string_pretty(&store).unwrap();
+        fs::write(&path, json).unwrap();
+
+        // Load it back and verify listing works
+        let loaded_store: JobStore =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        // Use jobs_sorted() to get sorted jobs
+        let jobs = loaded_store.jobs_sorted();
+
+        // Verify sorted order and data integrity
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[0].name, "apple");
+        assert_eq!(jobs[0].command, "cmd apple");
+        assert_eq!(jobs[1].name, "middle");
+        assert_eq!(jobs[1].command, "cmd middle");
+        assert_eq!(jobs[2].name, "zebra");
+        assert_eq!(jobs[2].command, "cmd zebra");
+    });
+}
