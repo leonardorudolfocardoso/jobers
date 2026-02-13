@@ -71,6 +71,14 @@ fn handle_add(name: String, command: String) -> Result<(), AppError> {
     Ok(())
 }
 
+fn handle_remove(name: String) -> Result<(), AppError> {
+    let store: JobStore = storage::load()?;
+    let store = store.without_job(&name)?;
+    storage::save(&store)?;
+    println!("✓ Removed job '{}'", name);
+    Ok(())
+}
+
 fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
@@ -96,8 +104,10 @@ fn main() -> Result<(), AppError> {
             }
         }
         Commands::Remove { name } => {
-            println!("Removing job: {}", name);
-            // TODO: Implement job removal
+            if let Err(e) = handle_remove(name) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         Commands::Show { name } => {
             println!("Showing details for job: {}", name);
