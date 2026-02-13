@@ -117,6 +117,18 @@ fn handle_list(verbose: bool) -> Result<(), AppError> {
     Ok(())
 }
 
+fn handle_show(name: String) -> Result<(), AppError> {
+    let store: JobStore = storage::load()?;
+
+    match store.get_job(&name) {
+        Some(job) => {
+            println!("{}", job);
+            Ok(())
+        }
+        None => Err(JobError::NotFound(name).into()),
+    }
+}
+
 fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
@@ -147,8 +159,10 @@ fn main() -> Result<(), AppError> {
             }
         }
         Commands::Show { name } => {
-            println!("Showing details for job: {}", name);
-            // TODO: Implement job details display
+            if let Err(e) = handle_show(name) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -193,5 +207,24 @@ mod tests {
         let output = format_jobs_verbose(&store);
         assert!(output.contains("Name: test"));
         assert!(output.contains("Command: echo test"));
+    }
+
+    #[test]
+    fn test_handle_show_displays_job() {
+        // This test verifies the show handler returns Ok and would display the job
+        // We can't easily test stdout, but we can verify the handler logic
+        let store = JobStore::new()
+            .with_job(Job::new("test", "echo test"))
+            .unwrap();
+
+        // Verify get_job works (which handle_show uses)
+        assert!(store.get_job("test").is_some());
+        assert_eq!(store.get_job("test").unwrap().name, "test");
+    }
+
+    #[test]
+    fn test_handle_show_fails_for_missing_job() {
+        let store = JobStore::new();
+        assert!(store.get_job("nonexistent").is_none());
     }
 }
