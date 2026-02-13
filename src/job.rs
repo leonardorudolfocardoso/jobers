@@ -9,6 +9,8 @@ pub enum JobError {
     AlreadyExists(String),
     #[error("Job '{0}' not found")]
     NotFound(String),
+    #[error("Failed to execute job '{0}': {1}")]
+    ExecutionFailed(String, String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +24,15 @@ impl Job {
         Self {
             name: name.into(),
             command: command.into(),
+        }
+    }
+
+    /// Build the full command by appending additional arguments
+    pub fn build_command(&self, args: &[String]) -> String {
+        if args.is_empty() {
+            self.command.clone()
+        } else {
+            format!("{} {}", self.command, args.join(" "))
         }
     }
 }
@@ -115,6 +126,27 @@ mod tests {
     }
 
     #[test]
+    fn test_build_command_no_args() {
+        let job = Job::new("test", "echo hello");
+        let cmd = job.build_command(&[]);
+        assert_eq!(cmd, "echo hello");
+    }
+
+    #[test]
+    fn test_build_command_with_args() {
+        let job = Job::new("backup", "rsync -av");
+        let cmd = job.build_command(&["src".to_string(), "dest".to_string()]);
+        assert_eq!(cmd, "rsync -av src dest");
+    }
+
+    #[test]
+    fn test_build_command_single_arg() {
+        let job = Job::new("list", "ls");
+        let cmd = job.build_command(&["-la".to_string()]);
+        assert_eq!(cmd, "ls -la");
+    }
+
+    #[test]
     fn test_job_store_new() {
         let store = JobStore::new();
         assert_eq!(store.jobs().count(), 0);
@@ -201,6 +233,12 @@ mod tests {
 
         let err = JobError::NotFound("missing".to_string());
         assert_eq!(err.to_string(), "Job 'missing' not found");
+
+        let err = JobError::ExecutionFailed("test".to_string(), "command not found".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Failed to execute job 'test': command not found"
+        );
     }
 
     #[test]

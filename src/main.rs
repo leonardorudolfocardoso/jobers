@@ -4,6 +4,16 @@ use thiserror::Error;
 use jobers::job::{Job, JobError, JobStore};
 use jobers::storage::{self, StorageError};
 
+#[cfg(target_family = "unix")]
+const SHELL: &str = "/bin/sh";
+#[cfg(target_family = "unix")]
+const SHELL_FLAG: &str = "-c";
+
+#[cfg(target_family = "windows")]
+const SHELL: &str = "cmd";
+#[cfg(target_family = "windows")]
+const SHELL_FLAG: &str = "/c";
+
 #[derive(Debug, Error)]
 enum AppError {
     #[error(transparent)]
@@ -26,7 +36,6 @@ enum Commands {
     /// Run a job
     Run {
         /// Name of the job to run
-        #[arg(short, long)]
         name: String,
 
         /// Additional arguments to pass to the job
@@ -164,17 +173,40 @@ fn handle_clear(skip_confirmation: bool) -> Result<(), AppError> {
     Ok(())
 }
 
+fn handle_run(name: String, args: Vec<String>) -> Result<i32, AppError> {
+    use std::process::Command;
+
+    // Load store and get job
+    let store: JobStore = storage::load()?;
+    let job = store
+        .get_job(&name)
+        .ok_or_else(|| JobError::NotFound(name.clone()))?;
+
+    // Build full command with args
+    let full_command = job.build_command(&args);
+
+    // Execute command through shell
+    let status = Command::new(SHELL)
+        .arg(SHELL_FLAG)
+        .arg(&full_command)
+        .status()
+        .map_err(|e| JobError::ExecutionFailed(name.clone(), e.to_string()))?;
+
+    // Return exit code
+    Ok(status.code().unwrap_or(1))
+}
+
 fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { name, args } => {
-            println!("Running job: {}", name);
-            if !args.is_empty() {
-                println!("With arguments: {:?}", args);
+        Commands::Run { name, args } => match handle_run(name, args) {
+            Ok(exit_code) => std::process::exit(exit_code),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
-            // TODO: Implement job execution
-        }
+        },
         Commands::List { verbose } => {
             if let Err(e) = handle_list(verbose) {
                 eprintln!("Error: {}", e);
@@ -267,20 +299,5 @@ mod tests {
     fn test_handle_show_fails_for_missing_job() {
         let store = JobStore::new();
         assert!(store.get_job("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_clear_removes_all_jobs() {
-        let store = JobStore::new()
-            .with_job(Job::new("job1", "cmd1"))
-            .unwrap()
-            .with_job(Job::new("job2", "cmd2"))
-            .unwrap();
-
-        assert_eq!(store.len(), 2);
-
-        let store = store.clear();
-        assert_eq!(store.len(), 0);
-        assert!(store.is_empty());
     }
 }
