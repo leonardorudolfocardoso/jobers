@@ -163,6 +163,21 @@ src/
 
 This approach separates **implementation** from **verification**, making the commit history easy to review and understand.
 
+**How the commits were created:**
+
+1. Reset staging area: `git reset HEAD .`
+2. For commits 1-3: Temporarily remove test code from files
+3. Stage and commit implementation only
+4. For commit 4: Restore full files with tests and commit all tests together
+5. This creates a clear narrative: "Here's what we built, here's how we verified it"
+
+**Why atomic commits matter:**
+- Each commit is independently reviewable
+- Easy to understand the evolution of the codebase
+- Can cherry-pick or revert individual features
+- Clear separation of concerns
+- Follows Conventional Commits format
+
 ## Key Technical Decisions
 
 ### 1. Functional Programming Style
@@ -241,7 +256,6 @@ jobers/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── claude.md           (this file)
-├── COMMIT_GUIDE.md     (guide for creating commits)
 ├── src/
 │   ├── lib.rs          (library entry point)
 │   ├── main.rs         (binary entry point)
