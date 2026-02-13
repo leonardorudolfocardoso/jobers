@@ -75,8 +75,7 @@ fn test_functional_job_store_operations() {
     let store2 = store1.with_job(job.clone()).unwrap();
     assert_eq!(store2.jobs().count(), 1);
 
-    // without_job returns a new store and the removed job
-    let (store3, removed) = store2.without_job("test");
+    // without_job returns a new store
+    let store3 = store2.without_job("test").unwrap();
     assert_eq!(store3.jobs().count(), 0);
-    assert_eq!(removed, Some(job));
 }

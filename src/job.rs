@@ -51,10 +51,14 @@ impl JobStore {
         self.jobs.get(name)
     }
 
-    pub fn without_job(self, name: &str) -> (Self, Option<Job>) {
+    /// Return a new JobStore without the job or an error if not found
+    pub fn without_job(self, name: &str) -> Result<Self, JobError> {
+        if !self.jobs.contains_key(name) {
+            return Err(JobError::NotFound(name.to_string()));
+        }
         let mut jobs = self.jobs;
-        let removed = jobs.remove(name);
-        (Self { jobs }, removed)
+        jobs.remove(name);
+        Ok(Self { jobs })
     }
 
     pub fn jobs(&self) -> impl Iterator<Item = &Job> {
@@ -121,28 +125,6 @@ mod tests {
     }
 
     #[test]
-    fn test_without_job_removes_existing() {
-        let store = JobStore::new();
-        let job = Job::new("test", "echo test");
-        let store = store.with_job(job.clone()).unwrap();
-
-        let (store, removed) = store.without_job("test");
-
-        assert_eq!(removed, Some(job));
-        assert_eq!(store.jobs().count(), 0);
-        assert_eq!(store.get_job("test"), None);
-    }
-
-    #[test]
-    fn test_without_job_returns_none_for_missing() {
-        let store = JobStore::new();
-        let (store, removed) = store.without_job("nonexistent");
-
-        assert_eq!(removed, None);
-        assert_eq!(store.jobs().count(), 0);
-    }
-
-    #[test]
     fn test_jobs_iterator() {
         let store = JobStore::new();
         let job1 = Job::new("job1", "echo 1");
@@ -153,6 +135,32 @@ mod tests {
 
         let jobs: Vec<_> = store.jobs().collect();
         assert_eq!(jobs.len(), 2);
+    }
+
+    #[test]
+    fn test_without_job_removes_existing() {
+        let store = JobStore::new();
+        let job = Job::new("test", "echo test");
+        let store = store.with_job(job).unwrap();
+
+        let result = store.without_job("test");
+        assert!(result.is_ok());
+
+        let store = result.unwrap();
+        assert_eq!(store.jobs().count(), 0);
+        assert_eq!(store.get_job("test"), None);
+    }
+
+    #[test]
+    fn test_without_job_fails_for_missing() {
+        let store = JobStore::new();
+        let result = store.without_job("nonexistent");
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            JobError::NotFound(name) => assert_eq!(name, "nonexistent"),
+            _ => panic!("Expected NotFound error"),
+        }
     }
 
     #[test]
