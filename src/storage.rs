@@ -72,3 +72,52 @@ pub fn save<T: Storable>(data: &T) -> Result<()> {
         .and_then(|_| storage_path::<T>())
         .and_then(|path| write_store(&path, data))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Storable, StorageError};
+    use serde::{Deserialize, Serialize};
+    use std::io;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+    struct TestData {
+        value: String,
+    }
+
+    impl Storable for TestData {
+        fn storage_filename() -> &'static str {
+            "test.json"
+        }
+    }
+
+    // Note: These tests are for internal storage functions that are private.
+    // We'll focus on testing the public API (load/save) through integration tests.
+
+    #[test]
+    fn test_storage_error_display() {
+        let err = StorageError::HomeNotFound;
+        assert_eq!(err.to_string(), "Could not determine home directory");
+
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        let err = StorageError::Io(io_err);
+        assert!(err.to_string().contains("IO error"));
+
+        let json_err = serde_json::from_str::<TestData>("invalid").unwrap_err();
+        let err = StorageError::Serialization(json_err);
+        assert!(err.to_string().contains("Serialization error"));
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
+        let storage_err: StorageError = io_err.into();
+        assert!(matches!(storage_err, StorageError::Io(_)));
+    }
+
+    #[test]
+    fn test_from_serde_error() {
+        let json_err = serde_json::from_str::<TestData>("{}bad").unwrap_err();
+        let storage_err: StorageError = json_err.into();
+        assert!(matches!(storage_err, StorageError::Serialization(_)));
+    }
+}

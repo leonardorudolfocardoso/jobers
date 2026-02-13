@@ -67,3 +67,100 @@ impl Storable for JobStore {
         "jobs.json"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Job, JobError, JobStore};
+
+    #[test]
+    fn test_job_creation() {
+        let job = Job::new("test", "echo hello");
+        assert_eq!(job.name, "test");
+        assert_eq!(job.command, "echo hello");
+    }
+
+    #[test]
+    fn test_job_store_new() {
+        let store = JobStore::new();
+        assert_eq!(store.jobs().count(), 0);
+    }
+
+    #[test]
+    fn test_with_job_adds_job() {
+        let store = JobStore::new();
+        let job = Job::new("test", "echo test");
+
+        let result = store.with_job(job.clone());
+        assert!(result.is_ok());
+
+        let store = result.unwrap();
+        assert_eq!(store.jobs().count(), 1);
+        assert_eq!(store.get_job("test"), Some(&job));
+    }
+
+    #[test]
+    fn test_with_job_rejects_duplicate() {
+        let store = JobStore::new();
+        let job1 = Job::new("test", "echo test");
+        let job2 = Job::new("test", "echo duplicate");
+
+        let store = store.with_job(job1).unwrap();
+        let result = store.with_job(job2);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            JobError::AlreadyExists(name) => assert_eq!(name, "test"),
+            _ => panic!("Expected AlreadyExists error"),
+        }
+    }
+
+    #[test]
+    fn test_get_job_returns_none_for_missing() {
+        let store = JobStore::new();
+        assert_eq!(store.get_job("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_without_job_removes_existing() {
+        let store = JobStore::new();
+        let job = Job::new("test", "echo test");
+        let store = store.with_job(job.clone()).unwrap();
+
+        let (store, removed) = store.without_job("test");
+
+        assert_eq!(removed, Some(job));
+        assert_eq!(store.jobs().count(), 0);
+        assert_eq!(store.get_job("test"), None);
+    }
+
+    #[test]
+    fn test_without_job_returns_none_for_missing() {
+        let store = JobStore::new();
+        let (store, removed) = store.without_job("nonexistent");
+
+        assert_eq!(removed, None);
+        assert_eq!(store.jobs().count(), 0);
+    }
+
+    #[test]
+    fn test_jobs_iterator() {
+        let store = JobStore::new();
+        let job1 = Job::new("job1", "echo 1");
+        let job2 = Job::new("job2", "echo 2");
+
+        let store = store.with_job(job1).unwrap();
+        let store = store.with_job(job2).unwrap();
+
+        let jobs: Vec<_> = store.jobs().collect();
+        assert_eq!(jobs.len(), 2);
+    }
+
+    #[test]
+    fn test_job_error_display() {
+        let err = JobError::AlreadyExists("test".to_string());
+        assert_eq!(err.to_string(), "Job 'test' already exists");
+
+        let err = JobError::NotFound("missing".to_string());
+        assert_eq!(err.to_string(), "Job 'missing' not found");
+    }
+}
