@@ -61,6 +61,13 @@ enum Commands {
         /// Name of the job
         name: String,
     },
+
+    /// Remove all jobs
+    Clear {
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 fn handle_add(name: String, command: String) -> Result<(), AppError> {
@@ -129,6 +136,34 @@ fn handle_show(name: String) -> Result<(), AppError> {
     }
 }
 
+fn handle_clear(skip_confirmation: bool) -> Result<(), AppError> {
+    let store: JobStore = storage::load()?;
+
+    if store.is_empty() {
+        println!("No jobs to clear.");
+        return Ok(());
+    }
+
+    let count = store.len();
+
+    if !skip_confirmation {
+        println!("This will remove all {} job(s). Continue? [y/N]: ", count);
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        let input = input.trim().to_lowercase();
+
+        if input != "y" && input != "yes" {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    let store = store.clear();
+    storage::save(&store)?;
+    println!("✓ Removed all {} job(s)", count);
+    Ok(())
+}
+
 fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
@@ -160,6 +195,12 @@ fn main() -> Result<(), AppError> {
         }
         Commands::Show { name } => {
             if let Err(e) = handle_show(name) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Clear { yes } => {
+            if let Err(e) = handle_clear(yes) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -226,5 +267,20 @@ mod tests {
     fn test_handle_show_fails_for_missing_job() {
         let store = JobStore::new();
         assert!(store.get_job("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_clear_removes_all_jobs() {
+        let store = JobStore::new()
+            .with_job(Job::new("job1", "cmd1"))
+            .unwrap()
+            .with_job(Job::new("job2", "cmd2"))
+            .unwrap();
+
+        assert_eq!(store.len(), 2);
+
+        let store = store.clear();
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
     }
 }

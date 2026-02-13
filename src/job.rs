@@ -80,6 +80,14 @@ impl JobStore {
     pub fn is_empty(&self) -> bool {
         self.jobs.is_empty()
     }
+
+    pub fn len(&self) -> usize {
+        self.jobs.len()
+    }
+
+    pub fn clear(self) -> Self {
+        Self::new()
+    }
 }
 
 impl Storable for JobStore {
@@ -222,5 +230,32 @@ mod tests {
         assert_eq!(sorted[0].name, "apple");
         assert_eq!(sorted[1].name, "middle");
         assert_eq!(sorted[2].name, "zebra");
+    }
+
+    #[test]
+    fn test_len() {
+        let store = JobStore::new();
+        assert_eq!(store.len(), 0);
+
+        let store = store.with_job(Job::new("job1", "cmd1")).unwrap();
+        assert_eq!(store.len(), 1);
+
+        let store = store.with_job(Job::new("job2", "cmd2")).unwrap();
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn test_clear() {
+        let store = JobStore::new()
+            .with_job(Job::new("job1", "cmd1"))
+            .unwrap()
+            .with_job(Job::new("job2", "cmd2"))
+            .unwrap();
+
+        assert_eq!(store.len(), 2);
+
+        let store = store.clear();
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
     }
 }
