@@ -1,4 +1,16 @@
 use clap::{Parser, Subcommand};
+use thiserror::Error;
+
+use jobers::job::{Job, JobError, JobStore};
+use jobers::storage::{self, StorageError};
+
+#[derive(Debug, Error)]
+enum AppError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error(transparent)]
+    Job(#[from] JobError),
+}
 
 #[derive(Parser)]
 #[command(name = "jobers")]
@@ -51,7 +63,15 @@ enum Commands {
     },
 }
 
-fn main() {
+fn handle_add(name: String, command: String) -> Result<(), AppError> {
+    let store: JobStore = storage::load()?;
+    let store = store.with_job(Job::new(name.clone(), command))?;
+    storage::save(&store)?;
+    println!("✓ Added job '{}'", name);
+    Ok(())
+}
+
+fn main() -> Result<(), AppError> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -70,8 +90,10 @@ fn main() {
             // TODO: Implement job listing
         }
         Commands::Add { name, command } => {
-            println!("Adding job '{}' with command: {}", name, command);
-            // TODO: Implement job addition
+            if let Err(e) = handle_add(name, command) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         Commands::Remove { name } => {
             println!("Removing job: {}", name);
@@ -82,4 +104,6 @@ fn main() {
             // TODO: Implement job details display
         }
     }
+
+    Ok(())
 }
