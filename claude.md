@@ -178,24 +178,204 @@ This approach separates **implementation** from **verification**, making the com
 - Clear separation of concerns
 - Follows Conventional Commits format
 
-## Key Technical Decisions
+### Phase 8: History Tracking Implementation
 
-### 1. Functional Programming Style
+**Objective:** Track job execution history to show users when jobs last ran and whether they succeeded or failed.
+
+**Design Decision:** Store only the **last run** for each job (not full history) to keep the data lightweight while providing useful recent execution state.
+
+**Components Implemented:**
+
+1. **Status enum** - Models execution outcomes:
+   ```rust
+   #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+   pub enum Status {
+       Success,
+       Failure { exit_code: i32 },
+   }
+   ```
+
+2. **Run struct** - Represents a single execution:
+   ```rust
+   #[derive(Debug, Clone, Serialize, Deserialize)]
+   pub struct Run {
+       pub status: Status,
+       pub timestamp: SystemTime,  // Using std::time, no new dependencies
+   }
+   ```
+
+3. **History struct** - Tracks last run with encapsulation:
+   ```rust
+   #[derive(Debug, Clone, Serialize, Deserialize)]
+   pub struct History {
+       last_run: Run,      // private field
+       run_count: u32,     // private field
+   }
+
+   impl History {
+       pub fn update_last_run(&mut self, status: Status) {
+           self.last_run = Run::new(status);
+           self.run_count += 1;
+       }
+
+       // Public getters for controlled access
+       pub fn last_run(&self) -> &Run { &self.last_run }
+       pub fn run_count(&self) -> u32 { self.run_count }
+   }
+   ```
+
+4. **HistoryStore** - HashMap-based persistent store:
+   ```rust
+   pub fn update_last_run(&mut self, job_name: impl Into<String>, status: Status) {
+       self.jobs
+           .entry(job_name.into())
+           .and_modify(|history| history.update_last_run(status))
+           .or_insert_with(|| History::new(status));
+   }
+   ```
+
+5. **format_timestamp()** - Utility function for human-readable times:
+   - Converts SystemTime to relative format ("3 hours ago", "2 days ago")
+   - Timezone-agnostic approach
+   - No additional dependencies needed
+
+**Integration Features:**
+- Automatic history updates when jobs execute via `run` command
+- History cleanup when jobs are removed via `remove` command
+- Display in `show` command output
+- Separate `history.json` storage file using existing `Storable` trait
+- Cross-store operations coordinating JobStore and HistoryStore
+
+**Key Implementation Choice - HashMap Entry API:**
+Used Rust's idiomatic `entry()` API pattern for efficient insert-or-update:
+- Single HashMap lookup instead of check-then-insert
+- More efficient and readable
+- Prevents race conditions in potential future concurrent scenarios
+
+**Test Coverage:** 11 comprehensive tests covering:
+- History creation and updates
+- Run counting
+- Status tracking
+- Timestamp formatting
+- Store operations (create, update, remove, clear)
+- Data replacement verification
+
+### Phase 9: API Refactoring - Functional to Mutable Pattern
+
+**Background:** The original implementation used a functional immutable pattern where methods consumed `self` and returned new instances. While this approach had benefits, it wasn't optimal for all use cases.
+
+**The Question Asked:** During implementation of the history module, a question arose: "Should `update_last_run` really consume self?" This led to examining Rust API guidelines, which recommend `&mut self` for simple mutation operations.
+
+**Follow-up Question:** "Should we refactor JobStore as well?" The answer was yes - both stores should follow idiomatic Rust patterns.
+
+**The Transformation:**
+
+Original (Functional Immutable Pattern from Phase 3):
 ```rust
-// Instead of mutable operations
 impl JobStore {
-    pub fn add_job(&mut self, job: Job) { ... }  // ❌
+    pub fn with_job(self, job: Job) -> Result<Self, JobError> {
+        if self.jobs.contains_key(&job.name) {
+            Err(JobError::AlreadyExists(job.name.clone()))
+        } else {
+            let mut jobs = self.jobs;
+            jobs.insert(job.name.clone(), job);
+            Ok(Self { jobs })
+        }
+    }
 
-    // We use functional approach
-    pub fn with_job(self, job: Job) -> Result<Self, JobError> { ... }  // ✅
+    pub fn without_job(self, name: &str) -> Result<Self, JobError> {
+        if !self.jobs.contains_key(name) {
+            return Err(JobError::NotFound(name.to_string()));
+        }
+        let mut jobs = self.jobs;
+        jobs.remove(name);
+        Ok(Self { jobs })
+    }
 }
 ```
 
-**Benefits:**
-- Easier to reason about
-- No shared mutable state
-- More testable
-- Composable operations
+Current (Mutable Pattern Following Rust Guidelines):
+```rust
+impl JobStore {
+    pub fn add_job(&mut self, job: Job) -> Result<(), JobError> {
+        use std::collections::hash_map::Entry;
+
+        match self.jobs.entry(job.name.clone()) {
+            Entry::Vacant(e) => {
+                e.insert(job);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(JobError::AlreadyExists(job.name)),
+        }
+    }
+
+    pub fn remove_job(&mut self, name: &str) -> Result<(), JobError> {
+        self.jobs
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| JobError::NotFound(name.to_string()))
+    }
+
+    pub fn clear(&mut self) {
+        self.jobs.clear();
+    }
+}
+```
+
+**Benefits of the Mutable Pattern:**
+- **More idiomatic Rust** - Follows standard library patterns (HashMap, Vec, etc.)
+- **Eliminates clones** - No need to clone data just to consume and reconstruct
+- **More efficient** - Direct mutation vs consume-and-reconstruct
+- **Cleaner signatures** - `Result<(), E>` vs `Result<Self, E>` is simpler
+- **Easier to use** - More intuitive for developers familiar with Rust collections
+- **Better performance** - No unnecessary allocations
+
+**Scope of Refactoring:**
+- Both `JobStore` and `HistoryStore` APIs updated
+- All handler functions in `main.rs` updated to use mutable references
+- All 43 tests updated to use new API
+- Leveraged HashMap `entry()` API throughout for idiomatic insert/update operations
+
+**Lessons from This Refactoring:**
+1. **Start simple, iterate** - Functional pattern was educational but not optimal
+2. **Follow the language** - Rust guidelines exist for good reasons
+3. **Don't fear refactoring** - Changing to a better approach is valuable
+4. **Test coverage enables confidence** - 43 tests ensured refactoring was safe
+
+## Key Technical Decisions
+
+### 1. API Pattern Evolution: Functional to Mutable
+
+**Initial Approach** (Phase 3):
+```rust
+// Functional immutable pattern
+impl JobStore {
+    pub fn with_job(self, job: Job) -> Result<Self, JobError> { ... }
+    pub fn without_job(self, name: &str) -> Result<Self, JobError> { ... }
+}
+```
+
+**Current Approach** (Phase 9):
+```rust
+// Mutable pattern following Rust guidelines
+impl JobStore {
+    pub fn add_job(&mut self, job: Job) -> Result<(), JobError> { ... }
+    pub fn remove_job(&mut self, name: &str) -> Result<(), JobError> { ... }
+}
+```
+
+**Why the Change:**
+- The functional approach was educational but not optimal for mutable storage types
+- Rust API guidelines recommend `&mut self` for simple mutations
+- Standard library uses mutable patterns (HashMap, Vec, etc.)
+- More efficient (no consume-and-reconstruct overhead)
+
+**Current Benefits:**
+- Idiomatic Rust that follows language conventions
+- More efficient (eliminates unnecessary clones)
+- Cleaner function signatures
+- Easier to use for Rust developers
+- Better performance characteristics
 
 ### 2. Generic Storage with Traits
 ```rust
@@ -232,7 +412,44 @@ pub enum StorageError {
 - Transparent error forwarding
 - Reduced boilerplate (from ~100 lines to ~20)
 
-### 4. Inline Tests with cfg(test)
+### 4. HashMap Entry API for Efficient Updates
+```rust
+// Idiomatic insert-or-update pattern
+pub fn update_last_run(&mut self, job_name: impl Into<String>, status: Status) {
+    self.jobs
+        .entry(job_name.into())
+        .and_modify(|history| history.update_last_run(status))
+        .or_insert_with(|| History::new(status));
+}
+```
+
+**Benefits:**
+- Single HashMap lookup instead of check + insert
+- Idiomatic Rust pattern used throughout the standard library
+- Efficient and readable
+- Avoids timing issues in concurrent scenarios
+- Prevents unnecessary clones
+
+### 5. Encapsulation with Private Fields
+```rust
+pub struct History {
+    last_run: Run,      // private
+    run_count: u32,     // private
+}
+
+impl History {
+    pub fn last_run(&self) -> &Run { &self.last_run }
+    pub fn run_count(&self) -> u32 { self.run_count }
+}
+```
+
+**Benefits:**
+- Prevents invalid state (can't set run_count without updating last_run)
+- Clear API boundaries (only exposed operations are intentional)
+- Easy to enforce invariants
+- Future-proof (can change internal representation without breaking API)
+
+### 6. Inline Tests with cfg(test)
 ```rust
 #[cfg(test)]
 mod tests {
@@ -248,6 +465,7 @@ mod tests {
 - Easy to navigate (no jumping between directories)
 - Access to private functions for unit testing
 - Standard modern Rust pattern
+- Scaled well from 16 to 43 tests without organizational issues
 
 ## Project Structure
 
@@ -255,13 +473,14 @@ mod tests {
 jobers/
 ├── Cargo.toml
 ├── Cargo.lock
-├── claude.md           (this file)
+├── CLAUDE.md           (this file)
 ├── src/
 │   ├── lib.rs          (library entry point)
-│   ├── main.rs         (binary entry point)
-│   ├── tests.rs        (integration tests - 4 tests)
-│   ├── job.rs          (Job + JobStore + 9 tests)
-│   └── storage.rs      (Storage + 3 tests)
+│   ├── main.rs         (binary entry point + handler functions)
+│   ├── tests.rs        (integration tests - 8 tests)
+│   ├── job.rs          (Job + JobStore + 16 tests)
+│   ├── storage.rs      (Storage + 3 tests)
+│   └── history.rs      (History tracking + 11 tests)
 └── target/             (build artifacts)
 ```
 
@@ -332,19 +551,54 @@ Finding the right balance:
 - Too nested: Complex structure
 - **Inline with cfg(test)**: Just right for this project
 
+### 5. API Design Evolution
+Starting with one pattern and evolving to another:
+- Functional pattern was educational but not optimal for all cases
+- Refactoring to mutable pattern when it makes sense is pragmatic
+- Rust API guidelines exist for good reasons (prefer `&mut self` for simple mutations)
+- Iterating on design based on real usage and community standards is valuable
+- Don't be afraid to refactor when you discover a better approach
+
+### 6. Encapsulation Matters
+Using private fields with public getters (History struct):
+- Prevents invalid state from being created
+- Provides clear API boundaries
+- Makes it easy to enforce invariants
+- Future-proof internal implementation changes
+
+### 7. HashMap Entry API is Powerful
+The `entry()` pattern with `and_modify()`/`or_insert_with()`:
+- Reduces code complexity significantly
+- Single lookup instead of check-then-mutate operations
+- Idiomatic Rust that matches standard library patterns
+- Prevents potential timing issues in concurrent code
+- More efficient than separate contains/insert operations
+
+### 8. Test Growth and Maintenance
+From 16 to 43 tests:
+- Inline test organization scaled well
+- Co-locating tests with code made maintenance easier
+- Comprehensive test coverage enabled confident refactoring
+- Good test names document expected behavior
+
 ## Future Enhancements
 
-The current implementation has TODO items for:
-- [ ] `run` command - Execute a stored job
-- [ ] `list` command - Display all jobs
-- [ ] `remove` command - Delete a job
-- [ ] `show` command - Display job details
+All core commands have been implemented:
+- ✅ `run` command - Execute jobs with history tracking
+- ✅ `list` command - Display all jobs (compact or verbose with sorting)
+- ✅ `remove` command - Delete jobs with history cleanup
+- ✅ `show` command - Display job details with last run information
+- ✅ `clear` command - Remove all jobs with confirmation
 
-These can be implemented following the same patterns:
-1. Add handler function (like `handle_add`)
-2. Use `?` operator for clean error flow
-3. Add unit tests inline
-4. Add integration tests in `tests.rs`
+**Potential Future Improvements:**
+- Full history retention (currently only keeps last run per job)
+- History export/analysis tools (JSON, CSV output)
+- Custom timestamp formats or timezone support
+- Job scheduling/cron integration
+- Configurable history retention policies
+- Job dependencies and workflows
+- Environment variable management per job
+- Job tagging and filtering
 
 ## Commands Used
 
@@ -374,28 +628,43 @@ git show <commit-hash>
 
 ## Final Statistics
 
-- **Lines of Code**: ~240 lines implementation + ~230 lines tests
-- **Modules**: 3 (job, storage, main)
-- **Tests**: 16 (all passing)
-- **Commits**: 4 atomic commits
-- **Dependencies**: 5 production + 1 dev
+- **Lines of Code**: ~550 lines implementation + ~420 lines tests
+- **Modules**: 4 (job, storage, history, main)
+- **Tests**: 43 (all passing - 38 lib + 5 main)
+  - 16 tests in job module
+  - 3 tests in storage module
+  - 11 tests in history module
+  - 8 integration tests
+  - 5 main/handler tests
+- **Commits**: 4 atomic commits (original session) + continued development
+- **Dependencies**: 5 production + 1 dev (unchanged)
 - **Test Coverage**: 100% of public API
 
 ## Conclusion
 
-This session demonstrated:
-- **Iterative development** with continuous refinement
-- **Functional programming** principles in Rust
+This development journey demonstrated:
+- **Iterative development** with continuous refinement across multiple sessions
+- **API design evolution** from functional to mutable patterns based on Rust guidelines
 - **Type-safe error handling** with thiserror
-- **Test-driven development** with comprehensive coverage
+- **Test-driven development** with comprehensive coverage (43 tests)
 - **Clean commit history** with atomic, logical commits
 - **Collaboration** with feedback incorporation and adaptation
+- **Pragmatic refactoring** when better approaches are discovered
 
-The result is a clean, well-tested, maintainable Rust CLI application following modern best practices.
+The project continued to evolve beyond the initial implementation. The addition of history tracking demonstrated how the generic storage architecture paid off - adding a new storable type required minimal changes to the infrastructure. The refactoring from functional to mutable patterns showed pragmatic decision-making based on Rust idioms and real-world usage patterns.
+
+This evolution from initial implementation to polished, idiomatic Rust code demonstrates the value of:
+- Iteration and willingness to refactor
+- Following language-specific guidelines and conventions
+- Learning from experience and adjusting approaches
+- Maintaining comprehensive test coverage to enable confident changes
+
+The result is a clean, efficient, well-tested, maintainable Rust CLI application following modern best practices and idiomatic patterns.
 
 ---
 
-**Session Date**: February 13, 2026
-**Duration**: ~2 hours
+**Original Session**: February 13, 2026 (~2 hours)
+**Continued Development**: February 14, 2026 (~3 hours)
+**Total Duration**: ~5 hours across 2 sessions
 **Rust Edition**: 2024
-**Claude Model**: Sonnet 3.5
+**Claude Model**: Sonnet 4.5
