@@ -1,3 +1,4 @@
+use crate::history::{HistoryStore, Status};
 use crate::job::{Job, JobStore};
 use crate::storage::Storable;
 use std::fs;
@@ -16,12 +17,12 @@ where
 fn test_save_and_load_job_store() {
     with_temp_storage(|temp| {
         // Create a job store with some jobs
-        let store = JobStore::new();
+        let mut store = JobStore::new();
         let job1 = Job::new("job1", "echo test1");
         let job2 = Job::new("job2", "echo test2");
 
-        let store = store.with_job(job1.clone()).unwrap();
-        let store = store.with_job(job2.clone()).unwrap();
+        store.add_job(job1.clone()).unwrap();
+        store.add_job(job2.clone()).unwrap();
 
         // Save to a temp location
         let path = temp.path().join(JobStore::storage_filename());
@@ -52,12 +53,12 @@ fn test_job_serialization() {
 
 #[test]
 fn test_job_store_serialization() {
-    let store = JobStore::new();
+    let mut store = JobStore::new();
     let job1 = Job::new("job1", "echo 1");
     let job2 = Job::new("job2", "echo 2");
 
-    let store = store.with_job(job1).unwrap();
-    let store = store.with_job(job2).unwrap();
+    store.add_job(job1).unwrap();
+    store.add_job(job2).unwrap();
 
     let json = serde_json::to_string(&store).unwrap();
     let deserialized: JobStore = serde_json::from_str(&json).unwrap();
@@ -66,31 +67,28 @@ fn test_job_store_serialization() {
 }
 
 #[test]
-fn test_functional_job_store_operations() {
-    // Test the functional nature of JobStore
-    let store1 = JobStore::new();
+fn test_job_store_mutation_operations() {
+    // Test the mutable nature of JobStore
+    let mut store = JobStore::new();
     let job = Job::new("test", "echo test");
 
-    // with_job returns a new store, original is consumed
-    let store2 = store1.with_job(job.clone()).unwrap();
-    assert_eq!(store2.jobs().count(), 1);
+    // add_job mutates the store
+    store.add_job(job.clone()).unwrap();
+    assert_eq!(store.jobs().count(), 1);
 
-    // without_job returns a new store
-    let store3 = store2.without_job("test").unwrap();
-    assert_eq!(store3.jobs().count(), 0);
+    // remove_job mutates the store
+    store.remove_job("test").unwrap();
+    assert_eq!(store.jobs().count(), 0);
 }
 
 #[test]
 fn test_list_formatting_integration() {
     with_temp_storage(|temp| {
         // Create a job store with multiple jobs (unsorted)
-        let store = JobStore::new()
-            .with_job(Job::new("zebra", "cmd zebra"))
-            .unwrap()
-            .with_job(Job::new("apple", "cmd apple"))
-            .unwrap()
-            .with_job(Job::new("middle", "cmd middle"))
-            .unwrap();
+        let mut store = JobStore::new();
+        store.add_job(Job::new("zebra", "cmd zebra")).unwrap();
+        store.add_job(Job::new("apple", "cmd apple")).unwrap();
+        store.add_job(Job::new("middle", "cmd middle")).unwrap();
 
         // Save to temp storage
         let path = temp.path().join(JobStore::storage_filename());
@@ -112,5 +110,48 @@ fn test_list_formatting_integration() {
         assert_eq!(jobs[1].command, "cmd middle");
         assert_eq!(jobs[2].name, "zebra");
         assert_eq!(jobs[2].command, "cmd zebra");
+    });
+}
+
+#[test]
+fn test_history_tracking() {
+    with_temp_storage(|_temp| {
+        // Create and record run
+        let mut history_store = HistoryStore::new();
+        history_store.update_last_run("test", Status::Success);
+
+        // Verify initial state
+        let history = history_store.get("test").unwrap();
+        assert_eq!(history.run_count(), 1);
+        assert_eq!(history.last_run().status, Status::Success);
+
+        // Record another run (replaces previous run details)
+        history_store.update_last_run("test", Status::Failure { exit_code: 1 });
+        let history = history_store.get("test").unwrap();
+        assert_eq!(history.run_count(), 2);
+        // Previous Success status is replaced with Failure
+        assert_eq!(history.last_run().status, Status::Failure { exit_code: 1 });
+    });
+}
+
+#[test]
+fn test_history_persistence() {
+    with_temp_storage(|temp| {
+        // Save history
+        let mut history_store = HistoryStore::new();
+        history_store.update_last_run("job1", Status::Success);
+        history_store.update_last_run("job2", Status::Failure { exit_code: 42 });
+
+        let path = temp.path().join(HistoryStore::storage_filename());
+        let json = serde_json::to_string_pretty(&history_store).unwrap();
+        fs::write(&path, json).unwrap();
+
+        // Load and verify
+        let loaded: HistoryStore =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert!(loaded.get("job1").is_some());
+        assert_eq!(loaded.get("job1").unwrap().run_count(), 1);
+        assert!(loaded.get("job2").is_some());
     });
 }

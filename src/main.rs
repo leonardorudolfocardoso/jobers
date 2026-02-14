@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use thiserror::Error;
 
+use jobers::history::{HistoryError, HistoryStore, Status, format_timestamp};
 use jobers::job::{Job, JobError, JobStore};
 use jobers::storage::{self, StorageError};
 
@@ -20,6 +21,8 @@ enum AppError {
     Storage(#[from] StorageError),
     #[error(transparent)]
     Job(#[from] JobError),
+    #[error(transparent)]
+    History(#[from] HistoryError),
 }
 
 #[derive(Parser)]
@@ -80,17 +83,23 @@ enum Commands {
 }
 
 fn handle_add(name: String, command: String) -> Result<(), AppError> {
-    let store: JobStore = storage::load()?;
-    let store = store.with_job(Job::new(name.clone(), command))?;
+    let mut store: JobStore = storage::load()?;
+    store.add_job(Job::new(name.clone(), command))?;
     storage::save(&store)?;
     println!("✓ Added job '{}'", name);
     Ok(())
 }
 
 fn handle_remove(name: String) -> Result<(), AppError> {
-    let store: JobStore = storage::load()?;
-    let store = store.without_job(&name)?;
+    let mut store: JobStore = storage::load()?;
+    store.remove_job(&name)?;
     storage::save(&store)?;
+
+    // Clean up run history for removed job
+    let mut history: HistoryStore = storage::load()?;
+    history.remove_job(&name);
+    storage::save(&history)?;
+
     println!("✓ Removed job '{}'", name);
     Ok(())
 }
@@ -139,6 +148,19 @@ fn handle_show(name: String) -> Result<(), AppError> {
     match store.get_job(&name) {
         Some(job) => {
             println!("{}", job);
+
+            // Display last run info if available
+            let history_store: HistoryStore = storage::load()?;
+            if let Some(history) = history_store.get(&name) {
+                println!("\nLast Run:");
+                println!("  Status: {}", history.last_run().status);
+                println!(
+                    "  Time: {}",
+                    format_timestamp(&history.last_run().timestamp)
+                );
+                println!("  Run Count: {}", history.run_count());
+            }
+
             Ok(())
         }
         None => Err(JobError::NotFound(name).into()),
@@ -167,9 +189,30 @@ fn handle_clear(skip_confirmation: bool) -> Result<(), AppError> {
         }
     }
 
-    let store = store.clear();
+    let mut store = store;
+    store.clear();
     storage::save(&store)?;
+
+    // Also clear run history
+    let mut history: HistoryStore = storage::load()?;
+    history.clear();
+    storage::save(&history)?;
+
     println!("✓ Removed all {} job(s)", count);
+    Ok(())
+}
+
+fn update_run_history(job_name: &str, exit_code: i32, success: bool) -> Result<(), AppError> {
+    let mut history: HistoryStore = storage::load()?;
+
+    let status = if success {
+        Status::Success
+    } else {
+        Status::Failure { exit_code }
+    };
+
+    history.update_last_run(job_name, status);
+    storage::save(&history)?;
     Ok(())
 }
 
@@ -192,8 +235,15 @@ fn handle_run(name: String, args: Vec<String>) -> Result<i32, AppError> {
         .status()
         .map_err(|e| JobError::ExecutionFailed(name.clone(), e.to_string()))?;
 
+    // Get exit code and success status
+    let exit_code = status.code().unwrap_or(1);
+    let success = status.success();
+
+    // Update run history
+    update_run_history(&name, exit_code, success)?;
+
     // Return exit code
-    Ok(status.code().unwrap_or(1))
+    Ok(exit_code)
 }
 
 fn main() -> Result<(), AppError> {
@@ -248,11 +298,9 @@ mod tests {
 
     #[test]
     fn test_format_jobs_compact_single_line_per_job() {
-        let store = JobStore::new()
-            .with_job(Job::new("job1", "echo 1"))
-            .unwrap()
-            .with_job(Job::new("job2", "echo 2"))
-            .unwrap();
+        let mut store = JobStore::new();
+        store.add_job(Job::new("job1", "echo 1")).unwrap();
+        store.add_job(Job::new("job2", "echo 2")).unwrap();
 
         let output = format_jobs_compact(&store);
         let lines: Vec<_> = output.lines().collect();
@@ -263,9 +311,8 @@ mod tests {
 
     #[test]
     fn test_format_jobs_verbose_includes_count() {
-        let store = JobStore::new()
-            .with_job(Job::new("test", "echo test"))
-            .unwrap();
+        let mut store = JobStore::new();
+        store.add_job(Job::new("test", "echo test")).unwrap();
 
         let output = format_jobs_verbose(&store);
         assert!(output.contains("Total jobs: 1"));
@@ -273,9 +320,8 @@ mod tests {
 
     #[test]
     fn test_format_jobs_verbose_includes_details() {
-        let store = JobStore::new()
-            .with_job(Job::new("test", "echo test"))
-            .unwrap();
+        let mut store = JobStore::new();
+        store.add_job(Job::new("test", "echo test")).unwrap();
 
         let output = format_jobs_verbose(&store);
         assert!(output.contains("Name: test"));
@@ -286,9 +332,8 @@ mod tests {
     fn test_handle_show_displays_job() {
         // This test verifies the show handler returns Ok and would display the job
         // We can't easily test stdout, but we can verify the handler logic
-        let store = JobStore::new()
-            .with_job(Job::new("test", "echo test"))
-            .unwrap();
+        let mut store = JobStore::new();
+        store.add_job(Job::new("test", "echo test")).unwrap();
 
         // Verify get_job works (which handle_show uses)
         assert!(store.get_job("test").is_some());

@@ -53,14 +53,16 @@ impl JobStore {
         Self::default()
     }
 
-    /// Return a new JobStore with the job or an error if it already exists
-    pub fn with_job(self, job: Job) -> Result<Self, JobError> {
-        if self.jobs.contains_key(&job.name) {
-            Err(JobError::AlreadyExists(job.name.clone()))
-        } else {
-            let mut jobs = self.jobs;
-            jobs.insert(job.name.clone(), job);
-            Ok(Self { jobs })
+    /// Add a job or return an error if it already exists
+    pub fn add_job(&mut self, job: Job) -> Result<(), JobError> {
+        use std::collections::hash_map::Entry;
+
+        match self.jobs.entry(job.name.clone()) {
+            Entry::Vacant(e) => {
+                e.insert(job);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(JobError::AlreadyExists(job.name)),
         }
     }
 
@@ -68,14 +70,12 @@ impl JobStore {
         self.jobs.get(name)
     }
 
-    /// Return a new JobStore without the job or an error if not found
-    pub fn without_job(self, name: &str) -> Result<Self, JobError> {
-        if !self.jobs.contains_key(name) {
-            return Err(JobError::NotFound(name.to_string()));
-        }
-        let mut jobs = self.jobs;
-        jobs.remove(name);
-        Ok(Self { jobs })
+    /// Remove a job or return an error if not found
+    pub fn remove_job(&mut self, name: &str) -> Result<(), JobError> {
+        self.jobs
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| JobError::NotFound(name.to_string()))
     }
 
     pub fn jobs(&self) -> impl Iterator<Item = &Job> {
@@ -96,8 +96,8 @@ impl JobStore {
         self.jobs.len()
     }
 
-    pub fn clear(self) -> Self {
-        Self::new()
+    pub fn clear(&mut self) {
+        self.jobs.clear();
     }
 }
 
@@ -153,26 +153,25 @@ mod tests {
     }
 
     #[test]
-    fn test_with_job_adds_job() {
-        let store = JobStore::new();
+    fn test_add_job_adds_job() {
+        let mut store = JobStore::new();
         let job = Job::new("test", "echo test");
 
-        let result = store.with_job(job.clone());
+        let result = store.add_job(job.clone());
         assert!(result.is_ok());
 
-        let store = result.unwrap();
         assert_eq!(store.jobs().count(), 1);
         assert_eq!(store.get_job("test"), Some(&job));
     }
 
     #[test]
-    fn test_with_job_rejects_duplicate() {
-        let store = JobStore::new();
+    fn test_add_job_rejects_duplicate() {
+        let mut store = JobStore::new();
         let job1 = Job::new("test", "echo test");
         let job2 = Job::new("test", "echo duplicate");
 
-        let store = store.with_job(job1).unwrap();
-        let result = store.with_job(job2);
+        store.add_job(job1).unwrap();
+        let result = store.add_job(job2);
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -189,35 +188,34 @@ mod tests {
 
     #[test]
     fn test_jobs_iterator() {
-        let store = JobStore::new();
+        let mut store = JobStore::new();
         let job1 = Job::new("job1", "echo 1");
         let job2 = Job::new("job2", "echo 2");
 
-        let store = store.with_job(job1).unwrap();
-        let store = store.with_job(job2).unwrap();
+        store.add_job(job1).unwrap();
+        store.add_job(job2).unwrap();
 
         let jobs: Vec<_> = store.jobs().collect();
         assert_eq!(jobs.len(), 2);
     }
 
     #[test]
-    fn test_without_job_removes_existing() {
-        let store = JobStore::new();
+    fn test_remove_job_removes_existing() {
+        let mut store = JobStore::new();
         let job = Job::new("test", "echo test");
-        let store = store.with_job(job).unwrap();
+        store.add_job(job).unwrap();
 
-        let result = store.without_job("test");
+        let result = store.remove_job("test");
         assert!(result.is_ok());
 
-        let store = result.unwrap();
         assert_eq!(store.jobs().count(), 0);
         assert_eq!(store.get_job("test"), None);
     }
 
     #[test]
-    fn test_without_job_fails_for_missing() {
-        let store = JobStore::new();
-        let result = store.without_job("nonexistent");
+    fn test_remove_job_fails_for_missing() {
+        let mut store = JobStore::new();
+        let result = store.remove_job("nonexistent");
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -243,25 +241,22 @@ mod tests {
 
     #[test]
     fn test_is_empty() {
-        let store = JobStore::new();
+        let mut store = JobStore::new();
         assert!(store.is_empty());
 
-        let store = store.with_job(Job::new("test", "echo test")).unwrap();
+        store.add_job(Job::new("test", "echo test")).unwrap();
         assert!(!store.is_empty());
 
-        let store = store.without_job("test").unwrap();
+        store.remove_job("test").unwrap();
         assert!(store.is_empty());
     }
 
     #[test]
     fn test_jobs_sorted() {
-        let store = JobStore::new()
-            .with_job(Job::new("zebra", "cmd zebra"))
-            .unwrap()
-            .with_job(Job::new("apple", "cmd apple"))
-            .unwrap()
-            .with_job(Job::new("middle", "cmd middle"))
-            .unwrap();
+        let mut store = JobStore::new();
+        store.add_job(Job::new("zebra", "cmd zebra")).unwrap();
+        store.add_job(Job::new("apple", "cmd apple")).unwrap();
+        store.add_job(Job::new("middle", "cmd middle")).unwrap();
 
         let sorted = store.jobs_sorted();
         assert_eq!(sorted.len(), 3);
@@ -272,27 +267,25 @@ mod tests {
 
     #[test]
     fn test_len() {
-        let store = JobStore::new();
+        let mut store = JobStore::new();
         assert_eq!(store.len(), 0);
 
-        let store = store.with_job(Job::new("job1", "cmd1")).unwrap();
+        store.add_job(Job::new("job1", "cmd1")).unwrap();
         assert_eq!(store.len(), 1);
 
-        let store = store.with_job(Job::new("job2", "cmd2")).unwrap();
+        store.add_job(Job::new("job2", "cmd2")).unwrap();
         assert_eq!(store.len(), 2);
     }
 
     #[test]
     fn test_clear() {
-        let store = JobStore::new()
-            .with_job(Job::new("job1", "cmd1"))
-            .unwrap()
-            .with_job(Job::new("job2", "cmd2"))
-            .unwrap();
+        let mut store = JobStore::new();
+        store.add_job(Job::new("job1", "cmd1")).unwrap();
+        store.add_job(Job::new("job2", "cmd2")).unwrap();
 
         assert_eq!(store.len(), 2);
 
-        let store = store.clear();
+        store.clear();
         assert_eq!(store.len(), 0);
         assert!(store.is_empty());
     }
